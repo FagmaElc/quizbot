@@ -1,28 +1,19 @@
 import asyncio
 import random
-import os
-
-from flask import Flask, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Пример: https://your-app-name.onrender.com/webhook
-
-# Вопросы
+# === Вопросы ===
 QUESTIONS = [
-    ("Какой язык программирования используется для веб-верстки?", ["Python", "HTML", "C++", "Java"], 1),
-    ("Сколько будет 2 + 2 * 2?", ["4", "6", "8", "10"], 1),
-    ("Столица Японии?", ["Киото", "Осака", "Токио", "Хиросима"], 2),
+    ("Какой язык для верстки?", ["Python", "HTML", "C++", "Java"], 1),
+    ("2 + 2 * 2 = ?", ["4", "6", "8", "10"], 1),
 ]
 
-# Игра
 class QuizGame:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -46,21 +37,7 @@ class QuizGame:
 
 games = {}
 
-# Flask app
-app = Flask(__name__)
-telegram_app: Application = ApplicationBuilder().token(TOKEN).build()
-
-@app.route("/")
-def index():
-    return "🤖 Quiz Bot is running!"
-
-@app.route("/webhook", methods=["POST"])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    await telegram_app.update_queue.put(update)
-    return "OK", 200
-
-# === Бот-обработчики ===
+# === Команды ===
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -173,14 +150,17 @@ async def finish_quiz(context: ContextTypes.DEFAULT_TYPE, game: QuizGame):
 
 # === Запуск ===
 
-if __name__ == "__main__":
-    telegram_app.add_handler(CommandHandler("quiz", start_quiz))
-    telegram_app.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
-    telegram_app.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:"))
+def main():
+    import os
+    TOKEN = os.getenv("BOT_TOKEN")  # Добавь эту переменную в Render (Environment)
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    # Запуск Telegram приложения
-    telegram_app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        webhook_url=WEBHOOK_URL + "/webhook"
-    )
+    app.add_handler(CommandHandler("quiz", start_quiz))
+    app.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
+    app.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:"))
+
+    print("🤖 Бот запущен!")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
