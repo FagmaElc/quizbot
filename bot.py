@@ -2,27 +2,27 @@ import os
 import random
 import asyncio
 from flask import Flask, request
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
 )
+from telegram.ext import defaults
 
-TOKEN = os.getenv("TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например: https://yourapp.onrender.com/<TOKEN>
+TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 app = Flask(__name__)
-bot = Bot(token=TOKEN)
-application = ApplicationBuilder().token(TOKEN).build()
 
-# Вопросы
 QUESTIONS = [
     ("Столица Франции?", ["Париж", "Лондон", "Берлин", "Мадрид"], 0),
-    ("Сколько ушей у человека?", ["1", "2", "3", "4"], 1),
-    # ... остальные вопросы ...
+    ("Кто написал 'Война и мир'?", ["Пушкин", "Толстой", "Гоголь", "Лермонтов"], 1),
+    # Добавьте остальные вопросы
 ]
+
+games = {}  # chat_id -> QuizGame
 
 class QuizGame:
     def __init__(self, chat_id):
@@ -30,7 +30,7 @@ class QuizGame:
         self.players = set()
         self.scores = {}
         self.current_q = -1
-        self.q_order = random.sample(range(len(QUESTIONS)), 30)
+        self.q_order = random.sample(range(len(QUESTIONS)), len(QUESTIONS))
         self.active = False
         self.answered = False
 
@@ -41,11 +41,9 @@ class QuizGame:
     def next_question(self):
         self.current_q += 1
         self.answered = False
-        if self.current_q >= 30:
+        if self.current_q >= len(self.q_order):
             return None
         return QUESTIONS[self.q_order[self.current_q]]
-
-games = {}  # chat_id -> QuizGame
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -62,120 +60,131 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     kb = [[InlineKeyboardButton("Присоединиться", callback_data="join")]]
     await update.message.reply_text(
-        "Набираем участников! Нажмите кнопку, чтобы присоединиться. Игра начнётся через 30 секунд.",
+        "Набираем участников! Нажмите кнопку. Старт через 30 секунд.",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
     await asyncio.sleep(30)
+
     if not game.players:
-        await context.bot.send_message(chat.id, "Нет участников — викторина отменена.")
-        games.pop(chat.id, None)
+        await context.bot.send_message(chat.id, "Нет участников. Игра отменена.")
+        games.pop(chat.id)
         return
 
     game.active = True
-    await context.bot.send_message(chat.id, "Игра начинается!")
+    await context.bot.send_message(chat.id, f"Игра началась! Вопросов: {len(QUESTIONS)}")
     await send_next_question(context, game)
 
 async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     user = q.from_user
-    chat_id = q.message.chat.id
-
-    game = games.get(chat_id)
+    cid = q.message.chat.id
+    game = games.get(cid)
     if not game:
         return
 
     if game.active:
-        await q.answer("Игра уже идёт", show_alert=True)
-        return
-
+        return await q.answer("Игра уже началась.", show_alert=True)
     if user.id in game.players:
-        await q.answer("Вы уже присоединились", show_alert=True)
-        return
+        return await q.answer("Вы уже присоединились.", show_alert=True)
 
     game.add_player(user.id)
-    await context.bot.send_message(chat_id, f"{user.full_name} присоединился к игре!")
+    names = []
+    for pid in game.players:
+        try:
+            member = await context.bot.get_chat_member(cid, pid)
+            names.append(member.user.full_name or "Участник")
+        except:
+            names.append("Неизвестный")
+    text = "Участники:\n" + "\n".join(names)
+    await context.bot.send_message(cid, text)
 
 async def send_next_question(context: ContextTypes.DEFAULT_TYPE, game: QuizGame):
-    q = game.next_question()
-    if not q:
-        await finish_quiz(context, game)
-        return
+    qdata = game.next_question()
+    if qdata is None:
+        return await finish_quiz(context, game)
 
-    text, options, correct = q
+    text, options, correct = qdata
     kb = [[InlineKeyboardButton(opt, callback_data=f"answer:{i}")] for i, opt in enumerate(options)]
+    await context.bot.send_message(game.chat_id, f"Вопрос {game.current_q + 1}: {text}", reply_markup=InlineKeyboardMarkup(kb))
+    context.application.create_task(answer_timeout(context, game))
 
-    await context.bot.send_message(
-        game.chat_id,
-        f"Вопрос {game.current_q + 1}: {text}",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
+async def answer_timeout(context: ContextTypes.DEFAULT_TYPE, game: QuizGame):
     await asyncio.sleep(15)
     if not game.answered:
-        await context.bot.send_message(game.chat_id, "⏱ Время вышло!")
+        await context.bot.send_message(game.chat_id, "⏰ Время вышло!")
         await send_next_question(context, game)
 
 async def answer_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    user = q.from_user
-    chat_id = q.message.chat.id
+    uid = q.from_user.id
+    cid = q.message.chat.id
 
-    game = games.get(chat_id)
-    if not game or not game.active:
+    game = games.get(cid)
+    if not game or not game.active or game.answered or uid not in game.players:
         return
 
-    if user.id not in game.players or game.answered:
-        return
-
-    game.answered = True
-    selected = int(q.data.split(":")[1])
+    idx = int(q.data.split(":")[1])
     _, _, correct = QUESTIONS[game.q_order[game.current_q]]
 
-    if selected == correct:
-        game.scores[user.id] += 1
-        await context.bot.send_message(chat_id, f"{user.full_name} ✅ Правильно!")
+    game.answered = True
+    if idx == correct:
+        game.scores[uid] += 1
+        await q.answer("✅ Правильно!", show_alert=True)
+        await context.bot.send_message(cid, f"{q.from_user.full_name} получает 1 очко!")
     else:
-        await context.bot.send_message(chat_id, f"{user.full_name} ❌ Неправильно.")
+        await q.answer("❌ Неверно!", show_alert=True)
+        await context.bot.send_message(cid, f"{q.from_user.full_name} ошибся.")
 
     await send_next_question(context, game)
 
 async def finish_quiz(context: ContextTypes.DEFAULT_TYPE, game: QuizGame):
+    if not game.scores:
+        await context.bot.send_message(game.chat_id, "Никто не ответил. Игра окончена.")
+        games.pop(game.chat_id)
+        return
+
     winners = sorted(game.scores.items(), key=lambda x: x[1], reverse=True)
-    text = "🏁 Игра окончена!\n"
-    for uid, score in winners:
-        try:
-            user = await context.bot.get_chat_member(game.chat_id, uid)
-            name = user.user.full_name
-        except:
-            name = "Неизвестный игрок"
-        text += f"{name}: {score} очков\n"
+    best_score = winners[0][1]
+    top_players = [uid for uid, score in winners if score == best_score]
+
+    text = "🏁 Игра окончена! Победители:\n"
+    for uid in top_players:
+        member = await context.bot.get_chat_member(game.chat_id, uid)
+        name = member.user.full_name or "Неизвестный"
+        text += f"— {name}: {game.scores[uid]} очков\n"
 
     await context.bot.send_message(game.chat_id, text)
-    games.pop(game.chat_id, None)
+    games.pop(game.chat_id)
 
-# Добавляем обработчики
+application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("quiz", start_quiz))
-application.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join$"))
+application.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
 application.add_handler(CallbackQueryHandler(answer_cb, pattern=r"^answer:\d+$"))
 
-# Webhook endpoint
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    application.update_queue.put_nowait(update)
-    return "OK"
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        await application.process_update(update)
+    return "ok"
 
 @app.route("/")
 def home():
     return "Бот работает!"
 
 if __name__ == "__main__":
-    print("Запуск бота...")
-    if WEBHOOK_URL:
-        import asyncio
-        asyncio.run(bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}"))
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    import asyncio
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    async def run():
+        await application.initialize()
+        await application.start()
+        # Webhook устанавливаем один раз
+        await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+    asyncio.run(run())
