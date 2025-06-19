@@ -2,6 +2,7 @@ import os
 import random
 import asyncio
 from threading import Thread
+from telegram.ext import MessageHandler, filters  # Убедись, что импортируешь filters (с маленькой буквы)
 
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,6 +23,9 @@ def index():
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
+
+from telegram.ext import MessageHandler, filters  # Убедись, что импортируешь filters (с маленькой буквы)
+
 
 # --- Вопросы викторины ---
 QUESTIONS = [
@@ -220,9 +224,17 @@ async def run_bot():
     if not TOKEN:
         print("❌ Ошибка: Переменная окружения BOT_TOKEN не задана!")
         return
+from telegram.ext import MessageHandler, filters  # Убедись, что импортируешь filters (с маленькой буквы)
 
+# Команда /start
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Привет! Я — бот для проведения викторины.\n\n"
+        "🧠 Чтобы начать игру, напиши команду /quiz.\n"
+        "Желаю удачи и весёлой игры! 🎉"
+    )
     app = ApplicationBuilder().token(TOKEN).build()
-
+    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("quiz", start_quiz))
     app.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
     app.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:"))
