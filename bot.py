@@ -1,6 +1,10 @@
-import asyncio
+import os
 import random
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import asyncio
+from threading import Thread
+
+from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -8,12 +12,25 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# === Вопросы ===
+# --- Flask приложение ---
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def index():
+    return "Баба Маня живёт 🔮"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+# --- Вопросы викторины ---
 QUESTIONS = [
-    ("Какой язык для верстки?", ["Python", "HTML", "C++", "Java"], 1),
-    ("2 + 2 * 2 = ?", ["4", "6", "8", "10"], 1),
+    ("Какой язык разметки используют в вебе?", ["HTML", "Python", "C++", "CSS"], 0),
+    ("Сколько будет 2 + 2 * 2?", ["4", "6", "8", "2"], 1),
+    ("Столица Японии?", ["Киото", "Осака", "Токио", "Хиросима"], 2),
 ]
 
+# --- Класс игры ---
 class QuizGame:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -37,15 +54,19 @@ class QuizGame:
 
 games = {}
 
-# === Команды ===
+# --- Обработчики ---
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    if chat.id in games and games[chat.id].active:
+        await update.message.reply_text("Игра уже идёт!")
+        return
+
     games[chat.id] = QuizGame(chat.id)
 
-    kb = [[InlineKeyboardButton("🎮 Присоединиться", callback_data="join")]]
+    kb = [[InlineKeyboardButton("👤 Присоединиться", callback_data="join")]]
     await update.message.reply_text(
-        "🎯 Игра начинается! Нажмите кнопку ниже, чтобы присоединиться. У вас есть 30 секунд!",
+        "🎮 Викторина начинается! Нажмите кнопку, чтобы присоединиться. У вас есть 30 секунд!",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -71,10 +92,10 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await q.answer("🚫 Игра уже идёт или не запущена!")
 
     if user.id in game.players:
-        return await q.answer("✅ Вы уже присоединились!")
+        return await q.answer("✅ Вы уже в игре!")
 
     game.add_player(user.id)
-    await q.answer("🎉 Участие подтверждено!")
+    await q.answer("🎉 Вы присоединились!")
 
     names = []
     for pid in game.players:
@@ -94,8 +115,8 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, game: QuizGame)
     if game.current_q + 1 >= len(QUESTIONS):
         return await finish_quiz(context, game)
 
-    text, opts, _ = game.next_question()
-    kb = [[InlineKeyboardButton(opt, callback_data=f"answer:{i}")] for i, opt in enumerate(opts)]
+    text, options, correct_index = game.next_question()
+    kb = [[InlineKeyboardButton(opt, callback_data=f"answer:{i}")] for i, opt in enumerate(options)]
     msg = await context.bot.send_message(
         game.chat_id,
         f"❓ Вопрос {game.current_q + 1}:\n\n{text}",
@@ -148,11 +169,14 @@ async def finish_quiz(context: ContextTypes.DEFAULT_TYPE, game: QuizGame):
     await context.bot.send_message(game.chat_id, result_text)
     games.pop(game.chat_id, None)
 
-# === Запуск ===
+# --- Запуск бота ---
 
-def main():
-    import os
-    TOKEN = os.getenv("BOT_TOKEN")  # Добавь эту переменную в Render (Environment)
+async def run_bot():
+    TOKEN = os.getenv("BOT_TOKEN")
+    if not TOKEN:
+        print("❌ Ошибка: Переменная окружения BOT_TOKEN не задана!")
+        return
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("quiz", start_quiz))
@@ -160,7 +184,9 @@ def main():
     app.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:"))
 
     print("🤖 Бот запущен!")
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    Thread(target=run_flask).start()
+    asyncio.run(run_bot())
+    
