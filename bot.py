@@ -1,49 +1,25 @@
-import asyncio
+import os
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-)
+import asyncio
+from threading import Thread
 
-# ✅ Список вопросов (сокращён для примера)
+from flask import Flask, request, abort
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
+
+TOKEN = os.getenv("TOKEN")  # токен из переменной окружения
+if not TOKEN:
+    raise RuntimeError("TOKEN environment variable not set")
+
+bot = Bot(token=TOKEN)
+app = Flask(__name__)
+
+# Вопросы
 QUESTIONS = [
     ("Столица Франции?", ["Париж", "Лондон", "Берлин", "Мадрид"], 0),
-    ("Какой элемент обозначается символом 'O'?", ["Кислород", "Золото", "Углерод", "Азот"], 0),
-    ("Кто написал 'Война и мир'?", ["Пушкин", "Толстой", "Достоевский", "Чехов"], 1),
-("Столица Германии?", ["Берлин", "Мюнхен", "Франкфурт", "Гамбург"], 0),
-    ("Какой элемент обозначается символом 'O'?", ["Кислород", "Золото", "Углерод", "Азот"], 0),
-    ("Кто написал 'Война и мир'?", ["Пушкин", "Толстой", "Достоевский", "Чехов"], 1),
-    ("Сколько планет в Солнечной системе?", ["7", "8", "9", "10"], 1),
-    ("Самая длинная река в мире?", ["Амазонка", "Нил", "Янцзы", "Миссисипи"], 0),
-    ("Какой город называют Большим Яблоком?", ["Лос-Анджелес", "Чикаго", "Нью-Йорк", "Сан-Франциско"], 2),
-    ("В каком году распался СССР?", ["1991", "1989", "1993", "1990"], 0),
-    ("Сколько хромосом у человека?", ["46", "44", "48", "42"], 0),
-    ("Кто нарисовал 'Мону Лизу'?", ["Ван Гог", "Пикассо", "Да Винчи", "Рембрандт"], 2),
-    ("Какой металл самый лёгкий?", ["Алюминий", "Железо", "Литий", "Медь"], 2),
-    ("Какой язык программирования используется для сайтов?", ["Python", "HTML", "C++", "Java"], 1),
-    ("Сколько часов в сутках?", ["24", "12", "36", "48"], 0),
-    ("Сколько ног у паука?", ["6", "8", "10", "12"], 1),
-    ("Столица Японии?", ["Осака", "Токио", "Киото", "Нагоя"], 1),
-    ("Какой океан самый большой?", ["Атлантический", "Индийский", "Тихий", "Северный Ледовитый"], 2),
-    ("Как называется красная планета?", ["Юпитер", "Марс", "Меркурий", "Сатурн"], 1),
-    ("Кто написал 'Гарри Поттера'?", ["Дж. К. Роулинг", "Стивен Кинг", "Толкин", "Хемингуэй"], 0),
-    ("Сколько дней в високосном году?", ["365", "364", "366", "367"], 2),
-    ("Какая страна самая большая по площади?", ["Канада", "Россия", "США", "Китай"], 1),
-    ("Что из этого — млекопитающее?", ["Курица", "Акула", "Кит", "Черепаха"], 2),
-    ("Какой газ нужен для дыхания?", ["Азот", "Гелий", "Кислород", "Углекислый газ"], 2),
-    ("Самая высокая гора мира?", ["Килиманджаро", "Эльбрус", "Монблан", "Эверест"], 3),
-    ("Где проводятся Олимпийские игры 2024 года?", ["Париж", "Токио", "Берлин", "Рим"], 0),
-    ("Что делает сердце?", ["Пищеварение", "Качает кровь", "Фильтрует", "Дышит"], 1),
-    ("Кто открыл Америку?", ["Магеллан", "Колумб", "Кук", "Вашингтон"], 1),
-    ("Сколько материков на Земле?", ["5", "6", "7", "8"], 2),
-    ("Где находится Эйфелева башня?", ["Берлин", "Рим", "Лондон", "Париж"], 3),
-    ("Какой цвет получается при смешивании синего и жёлтого?", ["Зелёный", "Фиолетовый", "Оранжевый", "Красный"], 0),
-    ("Кто был первым человеком в космосе?", ["Армстронг", "Гагарин", "Титов", "Королёв"], 1),
+    # ... (твой список вопросов) ...
     ("Сколько ушей у человека?", ["1", "2", "3", "4"], 1),
-    # ... добавь остальные до 30!
 ]
-
-assert len(QUESTIONS) >= 30, "⚠️ Нужно минимум 30 вопросов!"
 
 class QuizGame:
     def __init__(self, chat_id):
@@ -54,6 +30,7 @@ class QuizGame:
         self.q_order = random.sample(range(len(QUESTIONS)), 30)
         self.active = False
         self.answered = False
+        self.message_id = None
 
     def add_player(self, user_id):
         self.players.add(user_id)
@@ -62,137 +39,194 @@ class QuizGame:
     def next_question(self):
         self.current_q += 1
         self.answered = False
+        if self.current_q >= 30:
+            return None
         return QUESTIONS[self.q_order[self.current_q]]
 
 games = {}
 
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+dispatcher = Dispatcher(bot, None, workers=0, use_context=True)  # workers=0 — чтобы sync
+
+# === Хендлеры ===
+
+def start_quiz(update, context):
     chat = update.effective_chat
     if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("❌ Команда доступна только в группах.")
+        update.message.reply_text("Игра доступна только в группах.")
         return
 
     if chat.id in games and games[chat.id].active:
-        await update.message.reply_text("❗ Игра уже идёт!")
+        update.message.reply_text("Игра уже идёт в этом чате.")
         return
 
-    games[chat.id] = QuizGame(chat.id)
-    kb = [[InlineKeyboardButton("🎮 Присоединиться", callback_data="join")]]
-    await update.message.reply_text(
-        "🎯 Игра начинается! Нажмите кнопку ниже, чтобы присоединиться. У вас есть 30 секунд!",
+    game = QuizGame(chat.id)
+    games[chat.id] = game
+
+    kb = [[InlineKeyboardButton("Присоединиться", callback_data="join")]]
+    update.message.reply_text(
+        "Набираем участников! Нажмите кнопку, чтобы присоединиться. Игра начнётся через 30 секунд.",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
+    # Запускаем таймер для старта игры в отдельном потоке (asyncio в Flask без loop не работает)
+    def wait_and_start():
+        asyncio.run(wait_and_start_async(context, game))
+
+    Thread(target=wait_and_start).start()
+
+async def wait_and_start_async(context, game):
     await asyncio.sleep(30)
-    game = games.get(chat.id)
-    if not game or len(game.players) < 1:
-        await context.bot.send_message(chat.id, "⏹ Никто не присоединился. Игра отменена.")
-        games.pop(chat.id, None)
+    chat_id = game.chat_id
+
+    if not game.players:
+        await bot.send_message(chat_id, "Нет участников — викторина отменена.")
+        games.pop(chat_id, None)
         return
 
     game.active = True
-    await context.bot.send_message(chat.id, f"🚀 Викторина начинается! Всего 30 вопросов.")
-    await send_next_question(context, game)
+    await bot.send_message(chat_id, f"Игра началась! Вопросов: 30. Удачи!")
+    await send_next_question(bot, game)
 
-async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_next_question(bot, game):
+    qdata = game.next_question()
+    if qdata is None:
+        await finish_quiz(bot, game)
+        return
+
+    text, options, correct = qdata
+    kb = [[InlineKeyboardButton(opt, callback_data=f"answer:{i}")] for i, opt in enumerate(options)]
+    msg = await bot.send_message(game.chat_id, f"Вопрос {game.current_q + 1}: {text}",
+                                 reply_markup=InlineKeyboardMarkup(kb))
+    game.message_id = msg.message_id
+
+    # Запускаем таймер ответа
+    async def timeout():
+        await asyncio.sleep(15)
+        if not game.answered:
+            await bot.send_message(game.chat_id, "Время ответа истекло!")
+            await send_next_question(bot, game)
+
+    asyncio.create_task(timeout())
+
+def join_cb(update, context):
     q = update.callback_query
-    await q.answer()
+    q.answer()
+
     user = q.from_user
     cid = q.message.chat.id
 
     game = games.get(cid)
-    if not game or game.active:
-        return await q.answer("🚫 Игра уже идёт или не запущена!")
+    if not game:
+        q.message.reply_text("Игра не найдена.")
+        return
+
+    if game.active:
+        q.answer("Набор участников завершён — игра уже идёт!", show_alert=True)
+        return
 
     if user.id in game.players:
-        return await q.answer("✅ Вы уже присоединились!")
+        q.answer("Вы уже в игре!", show_alert=True)
+        return
 
     game.add_player(user.id)
-    await q.answer("🎉 Участие подтверждено!")
 
+    # Составляем список участников
     names = []
     for pid in game.players:
         try:
-            member = await context.bot.get_chat_member(cid, pid)
-            uname = f"@{member.user.username}" if member.user.username else member.user.full_name
-            names.append(uname)
+            member = bot.get_chat_member(cid, pid)
+            names.append(member.user.full_name or member.user.username or "Unknown")
         except:
-            continue
+            names.append("Unknown")
 
-    await q.message.edit_text(
-        "👥 Участники:\n" + "\n".join(names),
-        reply_markup=q.message.reply_markup
-    )
+    text = "🎯 Участники:\n" + "\n".join(names)
+    bot.send_message(cid, text)
 
-async def send_next_question(context, game: QuizGame):
-    if game.current_q + 1 >= 30:
-        return await finish_quiz(context, game)
-
-    text, opts, correct = game.next_question()
-    kb = [[InlineKeyboardButton(opt, callback_data=f"answer:{i}")] for i, opt in enumerate(opts)]
-    msg = await context.bot.send_message(
-        game.chat_id,
-        f"❓ Вопрос {game.current_q + 1}:\n\n{text}",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-    # Авто-пропуск по таймауту
-    context.application.create_task(wait_answer_timeout(context, game, msg.message_id))
-
-async def wait_answer_timeout(context, game: QuizGame, message_id):
-    await asyncio.sleep(15)
-    if not game.answered:
-        await context.bot.send_message(game.chat_id, "⏰ Время вышло! Никто не ответил.")
-        await send_next_question(context, game)
-
-async def answer_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def answer_cb(update, context):
     q = update.callback_query
-    user = q.from_user
+    q.answer()
+
+    uid = q.from_user.id
     cid = q.message.chat.id
-    data = q.data
 
     game = games.get(cid)
-    if not game or not game.active or game.answered or user.id not in game.players:
-        return await q.answer()
+    if not game or not game.active:
+        q.answer("Игра не активна.", show_alert=True)
+        return
 
-    idx = int(data.split(":")[1])
+    if uid not in game.players:
+        q.answer("Вы не участвуете в игре.", show_alert=True)
+        return
+
+    if game.answered:
+        q.answer("Вопрос уже отвечен.", show_alert=True)
+        return
+
+    idx = int(q.data.split(":")[1])
     _, _, correct = QUESTIONS[game.q_order[game.current_q]]
+
     game.answered = True
-
     if idx == correct:
-        game.scores[user.id] += 1
-        await q.answer("✅ Правильно!", show_alert=True)
-        await context.bot.send_message(cid, f"🎯 {user.full_name} получает 1 очко!")
+        game.scores[uid] += 1
+        q.answer("✅ Правильно!", show_alert=True)
+        bot.send_message(cid, f"{q.from_user.full_name} отвечает правильно и получает 1 очко!")
     else:
-        await q.answer("❌ Неверно!", show_alert=True)
-        await context.bot.send_message(cid, f"🙈 {user.full_name} ошибся.")
+        q.answer("❌ Неверно!", show_alert=True)
+        bot.send_message(cid, f"{q.from_user.full_name} ответил неправильно.")
 
-    await send_next_question(context, game)
+    # Запускаем следующий вопрос в отдельном потоке с asyncio
+    def next_q():
+        asyncio.run(send_next_question(bot, game))
+    Thread(target=next_q).start()
 
-async def finish_quiz(context, game: QuizGame):
+async def finish_quiz(bot, game):
+    if not game.scores:
+        await bot.send_message(game.chat_id, "Игра окончена. Нет участников.")
+        games.pop(game.chat_id, None)
+        return
+
     winners = sorted(game.scores.items(), key=lambda x: x[1], reverse=True)
     best_score = winners[0][1]
-    top_players = [uid for uid, score in winners if score == best_score]
+    winners_list = [uid for uid, sc in winners if sc == best_score]
 
-    result_text = "🏁 Игра завершена!\n\n🏆 Победители:\n"
-    for uid in top_players:
-        member = await context.bot.get_chat_member(game.chat_id, uid)
-        uname = f"@{member.user.username}" if member.user.username else member.user.full_name
-        result_text += f"- {uname}: {best_score} очков\n"
+    text = "🏆 Игра завершена! Победители:\n"
+    for uid in winners_list:
+        try:
+            member = await bot.get_chat_member(game.chat_id, uid)
+            name = member.user.full_name or member.user.username or "Unknown"
+        except Exception:
+            name = "Unknown"
+        text += f"- {name} — {game.scores[uid]} очков\n"
 
-    await context.bot.send_message(game.chat_id, result_text)
+    await bot.send_message(game.chat_id, text)
     games.pop(game.chat_id, None)
 
-def main():
-    TOKEN = "7630074850:AAFUMyj-EYzvWjBoHdymTB8Fdemk7KbIcAY"
-    app = ApplicationBuilder().token(TOKEN).build()
+# Регистрируем хендлеры
+dispatcher.add_handler(CommandHandler("quiz", start_quiz))
+dispatcher.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
+dispatcher.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:\d$"))
 
-    app.add_handler(CommandHandler("quiz", start_quiz))
-    app.add_handler(CallbackQueryHandler(join_cb, pattern="^join$"))
-    app.add_handler(CallbackQueryHandler(answer_cb, pattern="^answer:"))
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), bot)
+        dispatcher.process_update(update)
+        return "OK"
+    else:
+        abort(405)
 
-    print("🤖 Бот запущен!")
-    app.run_polling()
+@app.route("/")
+def index():
+    return "Бот работает"
 
 if __name__ == "__main__":
-    main()
+    # Перед запуском на Render укажи WEBHOOK_URL в переменных окружения, например:
+    # https://yourdomain.com/<TOKEN>
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    if not WEBHOOK_URL:
+        print("WEBHOOK_URL не установлен, запускаем без webhook")
+        app.run(port=5000)
+    else:
+        bot.delete_webhook()
+        bot.set_webhook(WEBHOOK_URL)
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
