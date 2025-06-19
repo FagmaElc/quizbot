@@ -6,8 +6,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-from quiz_logic import QuizGame, QUESTIONS  # Предположим, логика в отдельном файле
-
+from questions import QUESTIONS
 games = {}
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
