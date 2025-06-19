@@ -230,7 +230,9 @@ async def run_bot():
     print("🤖 Бот запущен!")
     await app.run_polling()
 
+def start_bot():
+    asyncio.run(run_bot())
+
 if __name__ == "__main__":
     Thread(target=run_flask).start()
-    asyncio.run(run_bot())
-    
+    Thread(target=start_bot).start()
