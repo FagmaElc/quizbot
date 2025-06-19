@@ -9,7 +9,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-from telegram.ext import defaults
+
 
 TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
