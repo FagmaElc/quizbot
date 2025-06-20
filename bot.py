@@ -1,99 +1,133 @@
 import os
-import asyncio
 import random
+import asyncio
+from flask import Flask
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Установи BOT_TOKEN в настройках Render
+# Получаем токен из переменных окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-questions = [ ... ]  # Твой список из 30 вопросов: (текст, [опции], индекс_правильного)
+# Flask-приложение для UptimeRobot ping
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Бот работает!"
+
+# Вопросы
+questions = [
+    ("Сколько будет 2 + 2?", ["3", "4", "5", "6"], 1),
+    ("Столица Франции?", ["Берлин", "Лондон", "Париж", "Рим"], 2),
+    ("Какой язык мы используем?", ["Java", "C++", "Python", "Ruby"], 2),
+    # добавь ещё 27 по аналогии...
+]
 
 games = {}  # chat_id -> игра
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Напишите /join чтобы присоединиться к игре.")
 
 async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = update.effective_user
-    if chat_id not in games:
-        games[chat_id] = {
-            "players": {},
-            "questions": random.sample(questions, len(questions)),
-            "current_q_index": 0,
-            "started": False,
-            "answers": {},
-        }
-    game = games[chat_id]
+    game = games.setdefault(chat_id, {
+        "players": {},
+        "questions": random.sample(questions, len(questions)),
+        "current_q_index": 0,
+        "started": False,
+        "answers": {},
+    })
+
     if game["started"]:
-        return await update.message.reply_text("Игра уже идет.")
-    if user.id in game["players"]:
-        return await update.message.reply_text(f"{user.first_name}, вы уже в игре.")
-    game["players"][user.id] = {"score": 0}
-    await update.message.reply_text(f"{user.first_name} присоединился к игре!")
+        await update.message.reply_text("Игра уже началась.")
+        return
+
+    if user.id not in game["players"]:
+        game["players"][user.id] = {"score": 0}
+        await update.message.reply_text(f"{user.first_name} присоединился к игре!")
+    else:
+        await update.message.reply_text("Вы уже в игре.")
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game = games.get(chat_id)
     if not game or not game["players"]:
-        return await update.message.reply_text("Нет игроков. Напишите /join")
+        return await update.message.reply_text("Нет игроков. Введите /join")
+
     if game["started"]:
-        return await update.message.reply_text("Игра уже запущена.")
+        return await update.message.reply_text("Игра уже началась.")
+
     game["started"] = True
     game["current_q_index"] = 0
     await send_question_all(context, chat_id)
 
 async def send_question_all(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     game = games[chat_id]
-    idx = game["current_q_index"]
-    if idx >= len(game["questions"]):
+    q_index = game["current_q_index"]
+    if q_index >= len(game["questions"]):
         return await show_results(context, chat_id)
 
-    qtext, opts, correct_idx = game["questions"][idx]
+    q_text, options, correct_idx = game["questions"][q_index]
     game["answers"] = {}
 
-    kb_rows = [
-        [InlineKeyboardButton(opt, callback_data=f"{uid}:{i}")]
-        for i, opt in enumerate(opts)
-        for uid in [None]  # trick to flatten
-    ]
-    for uid in game["players"]:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(opt, callback_data=f"{uid}:{i}") for i, opt in enumerate(opts)]
+    for user_id in game["players"]:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(opt, callback_data=f"{user_id}:{i}")]
+            for i, opt in enumerate(options)
         ])
-        await context.bot.send_message(uid, f"Вопрос {idx+1}: {qtext}\n30 секунд на ответ.", reply_markup=kb)
+        try:
+            await context.bot.send_message(user_id, f"Вопрос {q_index + 1}: {q_text}", reply_markup=keyboard)
+        except:
+            pass
 
-    asyncio.create_task(question_timeout(context, chat_id, idx))
+    asyncio.create_task(question_timeout(context, chat_id, q_index))
 
-async def question_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int, idx: int):
+async def question_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int, q_index: int):
     await asyncio.sleep(30)
     game = games.get(chat_id)
-    if not game or game["current_q_index"] != idx:
+    if not game or game["current_q_index"] != q_index:
         return
-    for uid in game["players"]:
-        if uid not in game["answers"]:
-            await context.bot.send_message(uid, "⏰ Время вышло, баллы не засчитаны.")
+
+    for user_id in game["players"]:
+        if user_id not in game["answers"]:
+            await context.bot.send_message(user_id, "⏰ Время вышло. Ответ не засчитан.")
     game["current_q_index"] += 1
     await send_question_all(context, chat_id)
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid_str, sel = q.data.split(":")
-    uid = int(uid_str); sel = int(sel)
-    if uid != q.from_user.id:
-        return await q.answer("Это не ваш вопрос.", show_alert=True)
+    query = update.callback_query
+    await query.answer()
+    uid_str, selected_str = query.data.split(":")
+    user_id = int(uid_str)
+    selected = int(selected_str)
 
-    chat_id = next(cid for cid, g in games.items() if uid in g["players"])
+    if query.from_user.id != user_id:
+        return await query.answer("Это не ваш вопрос!", show_alert=True)
+
+    chat_id = next((cid for cid, g in games.items() if user_id in g["players"]), None)
+    if not chat_id:
+        return await query.edit_message_text("Ошибка: игра не найдена.")
+
     game = games[chat_id]
-    idx = game["current_q_index"]
-    _, _, correct_idx = game["questions"][idx]
-    if uid in game["answers"]:
-        return await q.answer("Вы уже ответили.", show_alert=True)
+    if user_id in game["answers"]:
+        return await query.answer("Вы уже ответили.", show_alert=True)
 
-    if sel == correct_idx:
-        game["players"][uid]["score"] += 1
-        await q.edit_message_text(q.message.text + "\n✅ Правильный!")
+    q_index = game["current_q_index"]
+    _, options, correct_idx = game["questions"][q_index]
+
+    if selected == correct_idx:
+        game["players"][user_id]["score"] += 1
+        await query.edit_message_text(query.message.text + "\n✅ Верно!")
     else:
-        await q.edit_message_text(q.message.text + "\n❌ Неправильно.")
-    game["answers"][uid] = True
+        await query.edit_message_text(query.message.text + "\n❌ Неверно!")
+
+    game["answers"][user_id] = True
 
     if len(game["answers"]) == len(game["players"]):
         game["current_q_index"] += 1
@@ -101,25 +135,32 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_results(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     game = games[chat_id]
-    items = sorted(game["players"].items(), key=lambda x: x[1]["score"], reverse=True)
-    text = "Игра окончена! Результаты:\n" + "\n".join(
-        f"{await context.bot.get_chat(uid).first_name}: {data['score']} баллов"
-        for uid, data in items
-    )
-    text += f"\n\n🏆 Победитель: {await context.bot.get_chat(items[0][0]).first_name}"
+    results = sorted(game["players"].items(), key=lambda x: x[1]["score"], reverse=True)
+    text = "🏁 Игра окончена! Результаты:\n\n"
+    for idx, (uid, data) in enumerate(results, start=1):
+        user = await context.bot.get_chat(uid)
+        text += f"{idx}. {user.first_name}: {data['score']} баллов\n"
+    winner = await context.bot.get_chat(results[0][0])
+    text += f"\n🏆 Победитель: {winner.first_name}"
     await context.bot.send_message(chat_id, text)
     del games[chat_id]
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Введите /join в группе, затем /quiz, чтобы начать.")
+async def telegram_main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("join", join))
     app.add_handler(CommandHandler("quiz", start_quiz))
     app.add_handler(CallbackQueryHandler(button))
-    await app.run_polling()
 
+    await app.initialize()
+    await app.start()
+    print("🤖 Бот запущен.")
+    await app.updater.start_polling()
+    await app.updater.idle()
+
+# Одновременный запуск Flask и Telegram-бота
 if __name__ == "__main__":
-    asyncio.run(main())
+    import threading
+    threading.Thread(target=lambda: web_app.run(host="0.0.0.0", port=8080)).start()
+    asyncio.run(telegram_main())
