@@ -3,7 +3,7 @@ import random
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # вставь сюда свой токен
+TOKEN = "7630074850:AAFUMyj-EYzvWjBoHdymTB8Fdemk7KbIcAY"  # вставь сюда свой токен
 
 questions = [
     ("Сколько будет 2 + 2?", ["3", "4", "5", "6"], 1),
