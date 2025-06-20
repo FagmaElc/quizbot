@@ -1,6 +1,7 @@
 import os
 import random
 import asyncio
+import threading
 from flask import Flask
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -25,13 +26,14 @@ questions = [
     ("Сколько будет 2 + 2?", ["3", "4", "5", "6"], 1),
     ("Столица Франции?", ["Берлин", "Лондон", "Париж", "Рим"], 2),
     ("Какой язык мы используем?", ["Java", "C++", "Python", "Ruby"], 2),
-    # добавь ещё 27 по аналогии...
+    # Добавь свои 27+ вопросов по аналогии
 ]
 
 games = {}  # chat_id -> игра
 
+# Команды
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Напишите /join чтобы присоединиться к игре.")
+    await update.message.reply_text("Привет! Напиши /join чтобы присоединиться к игре.")
 
 async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -57,6 +59,7 @@ async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     game = games.get(chat_id)
+
     if not game or not game["players"]:
         return await update.message.reply_text("Нет игроков. Введите /join")
 
@@ -84,7 +87,7 @@ async def send_question_all(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         try:
             await context.bot.send_message(user_id, f"Вопрос {q_index + 1}: {q_text}", reply_markup=keyboard)
         except:
-            pass
+            pass  # Игрок не принимает личные сообщения
 
     asyncio.create_task(question_timeout(context, chat_id, q_index))
 
@@ -97,12 +100,14 @@ async def question_timeout(context: ContextTypes.DEFAULT_TYPE, chat_id: int, q_i
     for user_id in game["players"]:
         if user_id not in game["answers"]:
             await context.bot.send_message(user_id, "⏰ Время вышло. Ответ не засчитан.")
+
     game["current_q_index"] += 1
     await send_question_all(context, chat_id)
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     uid_str, selected_str = query.data.split(":")
     user_id = int(uid_str)
     selected = int(selected_str)
@@ -115,6 +120,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.edit_message_text("Ошибка: игра не найдена.")
 
     game = games[chat_id]
+
     if user_id in game["answers"]:
         return await query.answer("Вы уже ответили.", show_alert=True)
 
@@ -145,6 +151,7 @@ async def show_results(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     await context.bot.send_message(chat_id, text)
     del games[chat_id]
 
+# Основной Telegram бот
 async def telegram_main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -153,14 +160,11 @@ async def telegram_main():
     app.add_handler(CommandHandler("quiz", start_quiz))
     app.add_handler(CallbackQueryHandler(button))
 
-    await app.initialize()
-    await app.start()
     print("🤖 Бот запущен.")
-    await app.updater.start_polling()
-    await app.updater.idle()
+    await app.run_polling()
 
-# Одновременный запуск Flask и Telegram-бота
+# Запуск Flask и Telegram-бота
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=lambda: web_app.run(host="0.0.0.0", port=8080)).start()
+    port = int(os.environ.get("PORT", 10000))
+    threading.Thread(target=lambda: web_app.run(host="0.0.0.0", port=port)).start()
     asyncio.run(telegram_main())
