@@ -107,6 +107,9 @@ async def enable_autopost(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auto_posting_enabled[chat_id] = True
     await update.message.reply_text("🔔 Автозадачи включены в этом чате.")
 
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Команда /test сработала!")
+
 def main():
     Thread(target=run_flask).start()
 
@@ -118,15 +121,14 @@ def main():
     app.add_handler(CommandHandler("addtask", add_task))
     app.add_handler(CommandHandler("disable_autopost", disable_autopost))
     app.add_handler(CommandHandler("enable_autopost", enable_autopost))
+    app.add_handler(CommandHandler("test", test))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
 
     async def after_startup(app):
         asyncio.create_task(auto_post(app))
 
-    app.post_init = after_startup
-
     print("🧪 Фармакология Бот запущен!")
-    app.run_polling()
+    app.run_polling(post_init=after_startup)
 
 if __name__ == "__main__":
     main()
