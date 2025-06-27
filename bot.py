@@ -2,7 +2,7 @@ import random
 import os
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters,
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # Flask-приложение
 app = Flask(__name__)
