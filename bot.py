@@ -1,34 +1,132 @@
 import os
-from flask import Flask, request, Response
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+import random
+import asyncio
+from threading import Thread
+from flask import Flask
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ParseMode
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
 
-app = Flask(__name__)
+# --- Flask для web ---
+flask_app = Flask(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+@flask_app.route("/")
+def index():
+    return "Фармакология Бот живёт!"
 
-application = Application.builder().token(BOT_TOKEN).build()
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+# --- Данные ---
+chat_members = {}
+chat_ids = set()
+auto_posting_enabled = {}
+
+pharma_tasks = [
+    "Пациенту назначен препарат А. Какие возможные побочные эффекты?",
+    "Какой механизм действия у препарата Б?",
+    "Что противопоказано при приёме препарата В?",
+    "Опишите фармакокинетику препарата Г."
+]
+
+user_added_tasks = []
+
+# --- Основные хэндлеры ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет!")
+    await update.message.reply_text(
+        "Привет! Я бот с ситуационными задачами по фармакологии.\n"
+        "Напиши /task, чтобы получить задачу."
+    )
 
-application.add_handler(CommandHandler("start", start))
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
-    update = Update.from_dict(data)
-    application.create_task(application.process_update(update))
-    return Response("ok", status=200)
+    if chat_id not in chat_members:
+        chat_members[chat_id] = {}
 
-@app.route("/", methods=["GET"])
-def index():
-    return "Бот работает"
+    chat_members[chat_id][user.id] = {
+        "id": user.id,
+        "username": f"@{user.username}" if user.username else user.full_name,
+        "first_name": user.first_name,
+    }
+    chat_ids.add(chat_id)
 
-@app.before_first_request
-def set_webhook():
-    application.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+async def send_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    members = list(chat_members.get(chat_id, {}).values())
+
+    if not members:
+        await update.message.reply_text("Я пока никого не вижу в чате. Напиши что-нибудь, чтобы я тебя запомнил.")
+        return
+
+    # Выбираем случайного пользователя и задачу
+    user = random.choice(members)
+    tasks_pool = pharma_tasks + user_added_tasks
+    task = random.choice(tasks_pool)
+
+    message = f"🩺 Задача для {user['username']}:\n\n{task}"
+    await update.message.reply_text(message)
+
+async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❗ Пример: /addtask Опишите механизм действия препарата X")
+        return
+    task = " ".join(context.args)
+    user_added_tasks.append(task)
+    await update.message.reply_text("✅ Ваша задача добавлена!")
+
+async def auto_post(app):
+    await asyncio.sleep(10)
+    while True:
+        for chat_id in chat_ids:
+            if not auto_posting_enabled.get(chat_id, True):
+                continue
+            members = list(chat_members.get(chat_id, {}).values())
+            if members:
+                user = random.choice(members)
+                task = random.choice(pharma_tasks + user_added_tasks)
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text=f"⏰ Автозадача для {user['username']}:\n\n{task}")
+                except Exception as e:
+                    print(f"Ошибка отправки автозадачи в чат {chat_id}: {e}")
+        await asyncio.sleep(3600)  # каждый час
+
+async def disable_autopost(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    auto_posting_enabled[chat_id] = False
+    await update.message.reply_text("🔕 Автозадачи отключены в этом чате.")
+
+async def enable_autopost(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    auto_posting_enabled[chat_id] = True
+    await update.message.reply_text("🔔 Автозадачи включены в этом чате.")
+
+def main():
+    Thread(target=run_flask).start()
+
+    TOKEN = os.environ["BOT_TOKEN"]
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("task", send_task))
+    app.add_handler(CommandHandler("addtask", add_task))
+    app.add_handler(CommandHandler("disable_autopost", disable_autopost))
+    app.add_handler(CommandHandler("enable_autopost", enable_autopost))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_user))
+
+    async def after_startup(app):
+        asyncio.create_task(auto_post(app))
+
+    app.post_init = after_startup
+
+    print("🧪 Фармакология Бот запущен!")
+    app.run_polling()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    main()
